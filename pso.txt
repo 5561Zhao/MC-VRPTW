@@ -1,0 +1,169 @@
+1. 数据结构
+Customer: {ID, x, y, ready_time, due_time, service_type}
+Vehicle: {route, speed, cost_per_km}
+Drone: {routes, speed, cost_per_km, capacity}
+AGV: {routes, speed, cost_per_km, capacity}
+Solution: {vehicle_route, drone_routes, agv_routes, total_cost, fitness}
+Particle:
+position: 一个完整的 Solution 对象
+velocity: 一个交换操作列表, e.g., [(i1, j1), (i2, j2), ...]
+pbest_position: 该粒子经历过的最优 Solution
+pbest_fitness: 该粒子经历过的最优适应度值
+2. 主算法: PSO_Algorithm
+输入:
+Customers: 客户节点列表
+Depot: 仓库节点
+NumParticles: 粒子数量
+NumIterations: 迭代次数
+NumDrones, NumAGVs: 无人机和无人车数量
+w, c1, c2: PSO 参数 (惯性权重, 个体学习因子, 社会学习因子)
+变量:
+Swarm: 粒子群 (列表)
+gbest_position: 全局最优 Solution
+gbest_fitness: 全局最优适应度值
+流程:
+code
+Code
+PROCEDURE Run_PSO
+    // 1. 初始化
+    Load_and_Prepare_Data()
+    Swarm = Initialize_Swarm(NumParticles)
+    gbest_position = Find_Global_Best(Swarm)
+    gbest_fitness = gbest_position.fitness
+    
+    // 2. PSO 主循环
+    FOR iteration FROM 1 TO NumIterations
+        FOR each Particle in Swarm
+            // a. 更新速度
+            Particle.velocity = Update_Velocity(Particle, gbest_position, w, c1, c2)
+            
+            // b. 更新位置 (应用速度并重构解)
+            Particle.position = Update_Position(Particle)
+            
+            // c. 评估新位置
+            Particle.position.fitness, Particle.position.cost = Calculate_Fitness_And_Cost(Particle.position)
+            
+            // d. 更新个体最优 (pbest)
+            IF Particle.position.fitness > Particle.pbest_fitness THEN
+                Particle.pbest_position = Particle.position
+                Particle.pbest_fitness = Particle.position.fitness
+            END IF
+        END FOR
+        
+        // e. 更新全局最优 (gbest)
+        current_best_particle = Find_Best_Particle_In_Swarm(Swarm)
+        IF current_best_particle.pbest_fitness > gbest_fitness THEN
+            gbest_position = current_best_particle.pbest_position
+            gbest_fitness = current_best_particle.pbest_fitness
+        END IF
+    END FOR
+    
+    // 3. 输出结果
+    PRINT "优化完成"
+    PRINT_Details(gbest_position)
+    PLOT_Results(gbest_position)
+END PROCEDURE
+3. 核心子程序
+3.1 初始化
+code
+Code
+FUNCTION Initialize_Swarm(NumParticles)
+    Swarm = []
+    FOR i FROM 1 TO NumParticles
+        // 使用贪心启发式生成一个初始解
+        InitialSolution = Generate_Initial_Greedy_Solution()
+        
+        // 创建粒子
+        NewParticle = new Particle
+        NewParticle.position = InitialSolution
+        NewParticle.pbest_position = InitialSolution
+        NewParticle.pbest_fitness = Calculate_Fitness_And_Cost(InitialSolution).fitness
+        NewParticle.velocity = [] // 初始速度为空
+        
+        ADD NewParticle to Swarm
+    END FOR
+    RETURN Swarm
+END FUNCTION
+3.2 速度与位置更新
+code
+Code
+FUNCTION Update_Velocity(Particle, gbest_position, w, c1, c2)
+    // 速度由三部分组成：惯性、个体认知、社会认知
+    
+    // 1. 惯性部分: 保留一部分旧的速度
+    Inertia_Component = a subset of Particle.velocity where each swap is kept with probability w
+    
+    // 2. 个体认知部分: 计算从当前位置到 pbest 所需的交换操作
+    Cognitive_Swaps = Get_Swaps(Particle.position.truck_route, Particle.pbest_position.truck_route)
+    Cognitive_Component = a subset of Cognitive_Swaps where each swap is included with probability c1*rand()
+    
+    // 3. 社会认知部分: 计算从当前位置到 gbest 所需的交换操作
+    Social_Swaps = Get_Swaps(Particle.position.truck_route, gbest_position.truck_route)
+    Social_Component = a subset of Social_Swaps where each swap is included with probability c2*rand()
+    
+    // 4. 合并并注入随机性
+    NewVelocity = Inertia_Component + Cognitive_Component + Social_Component
+    IF rand() < mutation_probability THEN
+        ADD random swap(s) to NewVelocity
+    END IF
+    
+    RETURN NewVelocity
+END FUNCTION
+
+
+FUNCTION Get_Swaps(route_A, route_B)
+    // 比较两个卡车路径序列，返回一系列交换操作 (i, j)
+    // 使得 route_A 经过这些交换后变为 route_B
+    // (这是一个确定性的转换过程)
+    RETURN list_of_swaps
+END FUNCTION
+
+
+FUNCTION Update_Position(Particle)
+    // 这是解码器 (Decoder) 的核心
+    
+    // 1. 复制当前解，并仅对卡车路径应用速度
+    NewSolution = copy(Particle.position)
+    Apply swaps from Particle.velocity to NewSolution.truck_route
+    
+    // 2. 清空所有无人机/无人车路径，因为它们已失效
+    Clear all drone and AGV routes in NewSolution
+    
+    // 3. 识别所有不在新卡车路径上的客户，作为待分配任务
+    unassigned_tasks = All_Customers - Customers_in_Truck_Route(NewSolution)
+    
+    // 4. 模拟卡车沿其新路径行驶，并贪婪地分配无人设备任务
+    current_time = 0
+    FOR i FROM 0 TO length(NewSolution.truck_route) - 2
+        start_node = NewSolution.truck_route[i]
+        end_node = NewSolution.truck_route[i+1]
+        
+        // 从 unassigned_tasks 中为无人机和无人车分配任务
+        Assign_Drone_Tasks_Greedy(NewSolution, unassigned_tasks, start_node, end_node, current_time)
+        Assign_AGV_Tasks_Greedy(NewSolution, unassigned_tasks, start_node, end_node, current_time)
+        
+        Update truck_current_time to synchronized arrival time at end_node
+    END FOR
+    
+    // 5. 如果仍有未分配的任务，将它们插入到最优的卡车路径位置
+    IF unassigned_tasks is not empty THEN
+        Insert remaining tasks into NewSolution.truck_route using a best-insertion heuristic
+    END IF
+    
+    RETURN NewSolution // 返回一个重构后的完整解
+END FUNCTION
+3.3 成本与适应度计算
+code
+Code
+FUNCTION Calculate_Fitness_And_Cost(Solution)
+    // 逻辑与 ACO/VNS 伪代码中的相同
+    // 计算总成本，包括：
+    // 1. 卡车、无人机、无人车的行驶成本
+    // 2. 违反时间窗的惩罚成本 (早到/晚到)
+    // 3. 未服务客户的巨大惩罚
+    
+    total_cost = ...
+    fitness = 1 / total_cost
+    
+    RETURN fitness, total_cost
+END FUNCTION

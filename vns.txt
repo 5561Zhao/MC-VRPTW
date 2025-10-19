@@ -1,0 +1,165 @@
+1. 数据结构
+Customer: {ID, x, y, ready_time, due_time, service_type}
+Vehicle: {route, speed, cost_per_km}
+Drone: {routes, speed, cost_per_km, capacity}
+AGV: {routes, speed, cost_per_km, capacity}
+Solution: {vehicle_route, drone_routes, agv_routes, total_cost}
+2. 主算法: VNSFSTSP_Algorithm
+输入:
+Customers: 客户节点列表
+Depot: 仓库节点
+NumIterations: VNS 迭代次数
+k_max: 邻域结构的最大数量 (扰动强度)
+NumDrones, NumAGVs: 无人机和无人车数量
+变量:
+S_best: 全局最优解
+Cost_best: 全局最优成本
+流程:
+code
+Code
+PROCEDURE Run_VNS
+    // 1. 初始化
+    Load_and_Prepare_Data()
+    S_initial = Generate_Initial_Solution() // 使用贪心启发式生成一个初始解
+    S_best = S_initial
+    Cost_best = Calculate_Total_Cost(S_best)
+    
+    // 2. VNS 主循环
+    FOR iteration FROM 1 TO NumIterations
+        k = 1
+        S_current = S_best
+        
+        WHILE k <= k_max
+            // a. 扰动 (Shaking): 仅扰动卡车路径，生成一个“半成品”解
+            S_shaken_shell = Shake(S_current, k)
+            
+            // b. 重构 (Reconstruction): 根据新卡车路径，重新构建无人机/无人车路径
+            S_shaken_reconstructed = Reconstruct_And_Evaluate(S_shaken_shell)
+            
+            // c. 局部搜索 (Local Search): 对重构后的完整解进行优化
+            S_local_optimum = Local_Search(S_shaken_reconstructed)
+            
+            // d. 接受准则 (Move or Not)
+            IF Cost(S_local_optimum) < Cost(S_current) THEN
+                S_current = S_local_optimum
+                k = 1 // 找到更优解，重置邻域搜索
+                
+                // 更新全局最优解
+                IF Cost(S_current) < Cost_best THEN
+                    S_best = S_current
+                    Cost_best = Cost(S_current)
+                    PRINT "找到新的全局最优解"
+                END IF
+            ELSE
+                k = k + 1 // 未找到更优解，尝试更大的邻域
+            END IF
+        END WHILE
+    END FOR
+    
+    // 3. 输出结果
+    PRINT "优化完成"
+    PRINT_Details(S_best)
+    PLOT_Results(S_best)
+END PROCEDURE
+3. 核心子程序
+3.1 扰动 (Shaking)
+code
+Code
+FUNCTION Shake(Solution, k)
+    // 扰动操作只修改卡车路径，然后清空无人设备路径
+    S_new = copy(Solution)
+    truck_route = S_new.vehicle.route
+    
+    // 执行 k 次交换操作
+    FOR _ FROM 1 TO k
+        Select two random customer positions i, j in truck_route (excluding depot)
+        Swap customers at positions i and j
+    END FOR
+    
+    // 清空所有无人机和无人车的路径，因为它们依赖于旧的卡车路径
+    FOR each drone in S_new.drones
+        drone.routes = empty
+    END FOR
+    FOR each agv in S_new.agvs
+        agv.routes = empty
+    END FOR
+    
+    RETURN S_new // 返回一个仅包含新卡车路径的“半成品”解
+END FUNCTION
+3.2 重构与评估 (Decoder)
+code
+Code
+FUNCTION Reconstruct_And_Evaluate(S_shell)
+    // 1. 识别出所有不在卡车路径上的客户，作为待分配任务
+    unassigned_tasks = All_Customers - Customers_in_Truck_Route(S_shell)
+    
+    // 2. 模拟卡车沿其路径行驶，并在每个路段贪婪地分配无人设备任务
+    current_time = 0
+    FOR i FROM 0 TO length(S_shell.truck_route) - 2
+        start_node = S_shell.truck_route[i]
+        end_node = S_shell.truck_route[i+1]
+        
+        // 尝试从 unassigned_tasks 中为无人机和无人车分配任务
+        // 分配逻辑基于贪心策略，考虑时间窗、容量和行驶时间
+        Assign_Drone_Tasks_Greedy(S_shell, unassigned_tasks, start_node, end_node, current_time)
+        Assign_AGV_Tasks_Greedy(S_shell, unassigned_tasks, start_node, end_node, current_time)
+        
+        // 更新卡车的时间（考虑行驶、等待和与无人设备同步）
+        Update truck_current_time to synchronized arrival time at end_node
+    END FOR
+    
+    // 3. 如果仍有未分配的任务，使用最优插入法将其插入卡车路径
+    IF unassigned_tasks is not empty THEN
+        FOR each task in unassigned_tasks
+            Find best position in S_shell.truck_route to insert task
+            Insert task at best position
+        END FOR
+    END IF
+    
+    // 4. 评估最终构建的完整解
+    S_shell.total_cost = Calculate_Total_Cost(S_shell)
+    
+    RETURN S_shell
+END FUNCTION
+3.3 局部搜索 (Local Search / VND)
+code
+Code
+FUNCTION Local_Search(Solution)
+    // 实现一个变量邻域下降 (VND) 流程
+    S_best_local = Solution
+    k = 1
+    
+    // 定义一组局部搜索算子（邻域结构）
+    Neighborhood_Operators = [
+        1: Optimize_AGV_Internal_Routes, // 对每个AGV子路径进行TSP优化 (如2-opt)
+        2: Time_Window_Repair,          // 交换迟到和早到的节点，试图修复违反
+        3: Cross_Vehicle_Task_Exchange, // 在不同载具之间交换任务
+        4: Assign_Truck_Node_To_AGV     // 将一个卡车服务的客户转移给AGV
+    ]
+    
+    WHILE k <= length(Neighborhood_Operators)
+        // 从当前邻域中寻找更优解
+        S_new = Apply_Operator(Neighborhood_Operators[k], S_best_local)
+        
+        IF Cost(S_new) < Cost(S_best_local) THEN
+            S_best_local = S_new
+            k = 1 // 找到改进，回到第一个邻域结构重新搜索
+        ELSE
+            k = k + 1 // 当前邻域无改进，尝试下一个
+        END IF
+    END WHILE
+    
+    RETURN S_best_local
+END FUNCTION
+3.4 成本与适应度计算
+code
+Code
+FUNCTION Calculate_Total_Cost(Solution)
+    // 逻辑与 ACO 伪代码中的相同
+    // 计算总成本，包括：
+    // 1. 卡车、无人机、无人车的行驶成本
+    // 2. 违反时间窗的惩罚成本 (早到/晚到)
+    // 3. (隐式) 未服务客户的巨大惩罚，通过重构阶段保证所有客户被服务
+    
+    RETURN total_cost
+END FUNCTION
