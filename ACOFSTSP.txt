@@ -1,0 +1,225 @@
+1. 数据结构
+Customer: {ID, x, y, ready_time, due_time, service_type}
+Vehicle: {route, speed, cost_per_km}
+Drone: {routes, speed, cost_per_km, capacity}
+AGV: {routes, speed, cost_per_km, capacity}
+Solution: {vehicle_route, drone_routes, agv_routes, total_cost}
+2. 主算法: ACOFSTSP_Algorithm
+输入:
+Customers: 客户节点列表
+Depot: 仓库节点
+NumAnts: 蚂蚁数量
+NumIterations: 迭代次数
+NumDrones, NumAGVs: 无人机和无人车数量
+alpha, beta, rho, q: ACO 参数 (信息素影响因子, 启发式信息影响因子, 蒸发率, 信息素强度)
+变量:
+PheromoneMatrix[i, j]: 节点 i 到 j 的信息素浓度
+HeuristicInfo[i, j]: 节点 i 到 j 的启发式信息 (吸引力)
+GlobalBestSolution: 全局最优解
+GlobalBestCost: 全局最优成本
+tau_max, tau_min: MMAS 的信息素上下限
+流程:
+code
+Code
+PROCEDURE Run_Hybrid_ACO
+    // 1. 初始化
+    Load_and_Prepare_Data()
+    Calculate_Heuristic_Information() // η = 1 / (distance * due_time)
+    
+    // 2. 生成高质量的初始解 (种子解)
+    InitialSolution = Generate_Initial_Greedy_Solution()
+    GlobalBestSolution = InitialSolution
+    GlobalBestCost = Calculate_Total_Cost(InitialSolution)
+    
+    // 3. 初始化最大最小蚂蚁系统 (MMAS)
+    tau_max = q / (rho * GlobalBestCost)
+    tau_min = tau_max / (2 * NumCustomers)
+    Initialize PheromoneMatrix with tau_max
+    
+    // 4. 主循环：ACO 迭代优化
+    FOR iteration FROM 1 TO NumIterations
+        new_best_found_in_iteration = FALSE
+        
+        FOR ant FROM 1 TO NumAnts
+            // a. 为每只蚂蚁构建一个解
+            AntSolution = Construct_Solution_For_Ant()
+            
+            // b. 评估蚂蚁的解
+            AntCost = Calculate_Total_Cost(AntSolution)
+            
+            // c. 更新全局最优解
+            IF AntCost < GlobalBestCost THEN
+                GlobalBestSolution = AntSolution
+                GlobalBestCost = AntCost
+                new_best_found_in_iteration = TRUE
+            END IF
+        END FOR
+        
+        // d. 动态更新 MMAS 的信息素边界 (如果找到更优解)
+        IF new_best_found_in_iteration THEN
+            tau_max = q / (rho * GlobalBestCost)
+            tau_min = tau_max / (2 * NumCustomers)
+        END IF
+        
+        // e. 更新信息素
+        Update_Pheromones(GlobalBestSolution, GlobalBestCost)
+        
+    END FOR
+    
+    // 5. 输出结果
+    PRINT "优化完成"
+    PRINT_Details(GlobalBestSolution)
+    PLOT_Results(GlobalBestSolution)
+END PROCEDURE
+3. 核心子程序
+3.1 解的构建
+code
+Code
+FUNCTION Construct_Solution_For_Ant()
+    // 步骤 1: 蚂蚁根据信息素和启发式信息，构建一个客户节点的“优先服务序列”
+    PrioritySequence = []
+    UnvisitedNodes = all customer nodes
+    CurrentNode = Depot
+    
+    WHILE UnvisitedNodes is not empty
+        NextNode = Select_Next_Node_ACO(CurrentNode, UnvisitedNodes)
+        ADD NextNode to PrioritySequence
+        REMOVE NextNode from UnvisitedNodes
+        CurrentNode = NextNode
+    END WHILE
+    
+    // 步骤 2: 使用确定性启发式方法，将一维的优先序列映射为完整的多载具协同路径解
+    FullSolution = Map_Sequence_To_Full_Solution(PrioritySequence)
+    
+    RETURN FullSolution
+END FUNCTION
+
+
+FUNCTION Select_Next_Node_ACO(CurrentNode, UnvisitedNodes)
+    // 计算每个候选节点的选择概率
+    total_prob = 0
+    probabilities = []
+    FOR each Node in UnvisitedNodes
+        pheromone = PheromoneMatrix[CurrentNode, Node] ^ alpha
+        heuristic = HeuristicInfo[CurrentNode, Node] ^ beta
+        prob = pheromone * heuristic
+        ADD (Node, prob) to probabilities
+        total_prob += prob
+    END FOR
+    
+    // 使用轮盘赌选择法返回下一个节点
+    RETURN Roulette_Wheel_Selection(probabilities, total_prob)
+END FUNCTION
+3.2 信息素更新 (MMAS 规则)
+code
+Code
+PROCEDURE Update_Pheromones(BestSolution, BestCost)
+    // 1. 信息素蒸发
+    PheromoneMatrix = PheromoneMatrix * (1 - rho)
+    
+    // 2. 在最优路径上增加信息素 (精英策略)
+    pheromone_deposit = q / BestCost
+    FOR each edge (i, j) in BestSolution's routes (truck, drones, AGVs)
+        PheromoneMatrix[i, j] += pheromone_deposit
+        PheromoneMatrix[j, i] += pheromone_deposit // 对称更新
+    END FOR
+    
+    // 3. 强制信息素在 [tau_min, tau_max] 范围内
+    CLIP PheromoneMatrix values between tau_min and tau_max
+END PROCEDURE
+3.3 成本与适应度计算
+code
+Code
+FUNCTION Calculate_Total_Cost(Solution)
+    // 计算行驶成本
+    truck_distance_cost = Calculate_Path_Cost(Solution.vehicle_route, "Manhattan") * truck_cost_per_km
+    drone_distance_cost = SUM(Calculate_Path_Cost(r, "Euclidean") for r in Solution.drone_routes) * drone_cost_per_km
+    agv_distance_cost = SUM(Calculate_Path_Cost(r, "Manhattan") for r in Solution.agv_routes) * agv_cost_per_km
+    
+    // 计算时间窗惩罚成本
+    early_penalty, late_penalty = Check_Time_Windows(Solution)
+    time_window_penalty_cost = early_penalty * early_penalty_factor + late_penalty * late_penalty_factor
+    
+    // 计算未服务客户的惩罚 (确保解的有效性)
+    unserved_penalty = (NumCustomers - Num_Served(Solution)) * large_penalty_value
+    
+    RETURN truck_distance_cost + drone_distance_cost + agv_distance_cost + time_window_penalty_cost + unserved_penalty
+END FUNCTION
+
+
+FUNCTION Check_Time_Windows(Solution)
+    // 这是一个复杂的同步过程
+    Initialize all arrival_times
+    truck_current_time = 0
+    
+    // 沿卡车路径逐步推算时间
+    FOR i FROM 0 TO length(Solution.vehicle_route) - 2
+        start_node = Solution.vehicle_route[i]
+        end_node = Solution.vehicle_route[i+1]
+        
+        // 计算卡车到达下一站的最早时间
+        truck_arrival_time = truck_current_time + travel_time(start_node, end_node)
+        
+        // 查找所有在 end_node 汇合的无人机/无人车，并计算它们的返回时间
+        latest_rendezvous_time = truck_arrival_time
+        FOR each drone/AGV route that ends at end_node
+            return_time = Calculate_Unmanned_Vehicle_Path_Time(route)
+            latest_rendezvous_time = MAX(latest_rendezvous_time, return_time)
+        END FOR
+        
+        // 卡车必须等待最晚到达的设备，同步时间
+        synchronized_arrival_time = latest_rendezvous_time
+        arrival_times[end_node] = synchronized_arrival_time
+        
+        // 计算卡车在 end_node 的时间窗惩罚
+        Calculate and add penalties for end_node based on synchronized_arrival_time
+        
+        // 更新卡车可以出发的下一时刻时间 (考虑等待)
+        truck_current_time = MAX(synchronized_arrival_time, ready_time of end_node)
+        
+        // 同时，计算所有由无人机/无人车服务的分支路径上客户点的时间窗惩罚
+        Calculate and add penalties for all intermediate nodes on drone/AGV paths
+    END FOR
+    
+    RETURN total_early_time, total_late_time
+END FUNCTION
+3.4 初始解生成 和 序列到解的映射
+Generate_Initial_Greedy_Solution() 和 Map_Sequence_To_Full_Solution() 共享相似的逻辑，其核心是基于一个给定的客户序列（前者是动态贪心选择，后者是固定的 PrioritySequence）来构建详细的多载具路径。
+code
+Code
+PROCEDURE Greedy_Task_Assignment_Logic(Customer_Sequence)
+    Initialize empty solution (truck, drones, AGVs)
+    Initialize available drones/AGVs list
+    truck_route = [Depot]
+    current_time = 0
+    current_truck_pos = Depot
+    
+    WHILE Customer_Sequence is not empty
+        // 1. 卡车服务下一个客户
+        next_customer = first item in Customer_Sequence
+        Move truck from current_truck_pos to next_customer
+        Update truck_route, current_truck_pos, and current_time (respecting time windows)
+        
+        // 2. 在卡车移动前后，检查并分配无人机/无人车任务
+        Update drone/AGV availability based on current_time
+        
+        // 3. 贪心分配无人机任务
+        FOR each available_drone
+            Find best drone tasks from remaining Customer_Sequence based on time windows and capacity
+            IF suitable tasks found
+                Assign tasks, create a drone route (launch_node -> tasks -> rendezvous_node)
+                Remove assigned tasks from Customer_Sequence
+                Mark drone as unavailable and record its return time
+            END IF
+        END FOR
+        
+        // 4. 贪心分配无人车任务 (逻辑类似)
+        FOR each available_agv
+            Find best AGV tasks...
+            Assign tasks...
+        END FOR
+    END WHILE
+    
+    Append Depot to truck_route
+    Finalize all unmanned vehicle routes (ensure they return to a truck node or depot)
+END PROCEDURE
